@@ -1,0 +1,76 @@
+name: EC2 Docker Deploy
+
+# Workflow가 언제 실행될지 설정
+on:
+  push:
+    branches:
+      # main 브랜치에 push가 발생하면 자동 배포 실행
+      - main
+
+# 실제 실행할 작업 목록
+jobs:
+  deploy:
+    # GitHub Actions Runner 환경
+    # GitHub가 제공하는 Ubuntu 임시 서버에서 작업 실행
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. GitHub 저장소의 코드를 Runner로 가져오는 단계
+      # 현재 workflow가 실행되는 시점의 코드를 checkout함
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # 2. EC2 서버에 SSH로 접속해서 배포 명령어 실행
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          # GitHub Secrets에 저장한 EC2 공인 IP 또는 도메인
+          host: ${{ secrets.EC2_HOST }}
+
+          # EC2 접속 사용자명
+          # Ubuntu EC2는 보통 ubuntu
+          username: ${{ secrets.EC2_USERNAME }}
+
+          # EC2 접속용 private key
+          # .pem 파일 내용을 GitHub Secrets에 저장한 값
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          # SSH 접속 포트
+          # 기본값은 22
+          port: ${{ secrets.EC2_PORT }}
+
+          # EC2 서버에 접속한 뒤 실행할 명령어들
+          script: |
+            # EC2 안에 clone되어 있는 프로젝트 폴더로 이동
+            cd ~/14th-be-ec2-session
+
+            # GitHub main 브랜치의 최신 코드 반영
+            git pull origin main
+
+            # GitHub Secrets 값을 이용해 EC2 서버 안에 .env 파일 생성
+            # 이 .env 파일은 docker-compose.yml에서 읽어서 컨테이너 환경변수로 사용함
+            cat > .env << EOF
+            DATABASE_NAME=${{ secrets.DATABASE_NAME }}
+            DATABASE_USER=${{ secrets.DATABASE_USER }}
+            DATABASE_PASS=${{ secrets.DATABASE_PASS }}
+
+            JWT_KEY=${{ secrets.JWT_KEY }}
+            JWT_AT_EXPIRATION=${{ secrets.JWT_AT_EXPIRATION }}
+            JWT_RT_EXPIRATION=${{ secrets.JWT_RT_EXPIRATION }}
+            JWT_ISSUER=${{ secrets.JWT_ISSUER }}
+            EOF
+
+            # Gradle Wrapper 실행 권한 부여
+            chmod +x gradlew
+
+            # Spring Boot 실행 jar 파일 생성
+            # 테스트는 배포 실습 편의를 위해 제외
+            ./gradlew clean bootJar -x test
+
+            # 기존 컨테이너 종료 및 제거
+            sudo docker compose down
+
+            # Dockerfile 기준으로 app 이미지를 다시 빌드하고 컨테이너 실행
+            # -d: 백그라운드 실행
+            # --build: 이미지 새로 빌드
+            sudo docker compose up -d --build
